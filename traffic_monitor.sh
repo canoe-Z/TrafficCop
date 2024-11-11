@@ -1,5 +1,5 @@
 #!/bin/bash
-WORK_DIR=$(pwd)
+WORK_DIR="/root/TrafficCop"
 CONFIG_FILE="$WORK_DIR/traffic_monitor_config"
 LOG_FILE="$WORK_DIR/traffic_monitor.log"
 SCRIPT_PATH="$WORK_DIR/traffic_monitor.sh"
@@ -21,7 +21,7 @@ kill_other_instances() {
 }
 
 check_and_install_packages() {
-    local packages=("vnstat" "jq" "bc" "iproute2" "coreutils" "grep" "tzdata")
+    local packages=("vnstat" "jq" "bc" "iproute2" "coreutils" "grep" "tzdata" "pidof")
     local need_install=false
 
     for package in "${packages[@]}"; do
@@ -473,7 +473,7 @@ main() {
     fi
 
     # 检查是否以 --run 模式运行
-    if [ "\$1" = "--run" ]; then
+    if [ $1 = "--run" ]; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') 正在以自动化模式运行" | tee -a "$LOG_FILE"
         if read_config; then
             check_reset_limit
