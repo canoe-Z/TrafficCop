@@ -1,12 +1,9 @@
 #!/bin/bash
-WORK_DIR="/root/TrafficCop"
-CONFIG_FILE="$WORK_DIR/traffic_monitor_config.txt"
+WORK_DIR=$(pwd)
+CONFIG_FILE="$WORK_DIR/traffic_monitor_config"
 LOG_FILE="$WORK_DIR/traffic_monitor.log"
 SCRIPT_PATH="$WORK_DIR/traffic_monitor.sh"
 LOCK_FILE="$WORK_DIR/traffic_monitor.lock"
-
-# 设置时区为上海（东八区）
-export TZ='Asia/Shanghai'
 
 echo "-----------------------------------------------------" | tee -a "$LOG_FILE"
 echo "$(date '+%Y-%m-%d %H:%M:%S') 当前版本：1.0.84" | tee -a "$LOG_FILE"
@@ -23,53 +20,12 @@ kill_other_instances() {
     done
 }
 
-migrate_files() {
-    # 创建新的工作目录
-    mkdir -p "$WORK_DIR"
-
-    # 迁移配置文件
-    if [ -f "/root/traffic_monitor_config.txt" ]; then
-        mv "/root/traffic_monitor_config.txt" "$CONFIG_FILE"
-    fi
-
-    # 迁移日志文件
-    if [ -f "/root/traffic_monitor.log" ]; then
-        mv "/root/traffic_monitor.log" "$LOG_FILE"
-    fi
-
-    # 删除旧的脚本文件，而不是迁移
-    if [ -f "/root/traffic_monitor.sh" ]; then
-        rm "/root/traffic_monitor.sh"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') 旧的脚本文件已删除" | tee -a "$LOG_FILE"
-    fi
-
-    # 迁移软件包安装标志文件
-    if [ -f "/root/.traffic_monitor_packages_installed" ]; then
-        mv "/root/.traffic_monitor_packages_installed" "$WORK_DIR/.traffic_monitor_packages_installed"
-    fi
-
-    # 迁移其他可能存在的相关文件
-    for file in /root/traffic_monitor_*.txt /root/traffic_monitor_*.log; do
-        if [ -f "$file" ]; then
-            mv "$file" "$WORK_DIR/"
-        fi
-    done
-
-    # 更新 crontab 中的脚本路径
-    if crontab -l | grep -q "/root/traffic_monitor.sh"; then
-        crontab -l | sed "s|/root/traffic_monitor.sh|$SCRIPT_PATH|g" | crontab -
-        echo "$(date '+%Y-%m-%d %H:%M:%S') Crontab 已更新为新的脚本路径" | tee -a "$LOG_FILE"
-    fi
-
-    echo "$(date '+%Y-%m-%d %H:%M:%S') 文件已迁移到新的工作目录: $WORK_DIR" | tee -a "$LOG_FILE"
-}
-
 check_and_install_packages() {
-    local packages=("vnstat" "jq" "bc" "iproute2")
+    local packages=("vnstat" "jq" "bc" "iproute2" "coreutils" "grep" "tzdata")
     local need_install=false
 
     for package in "${packages[@]}"; do
-        if ! dpkg -s "$package" >/dev/null 2>&1; then
+        if ! apk info -e "$package" >/dev/null 2>&1; then
             echo "$(date '+%Y-%m-%d %H:%M:%S') $package 未安装，将进行安装..." | tee -a "$LOG_FILE"
             need_install=true
             break
@@ -78,18 +34,18 @@ check_and_install_packages() {
 
     if $need_install; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') 正在更新软件包列表..." | tee -a "$LOG_FILE"
-        if ! sudo apt-get update; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S') 更新软件包列表失败，请检查网络连接和系统状态。" | tee -a "$LOG_FILE"
+        if ! apk update; then
+            echo "$(date '+%Y-%m-%d %H:%M-%S') 更新软件包列表失败，请检查网络连接和系统状态。" | tee -a "$LOG_FILE"
             return 1
         fi
 
         for package in "${packages[@]}"; do
-            if ! dpkg -s "$package" >/dev/null 2>&1; then
+            if ! apk info -e "$package" >/dev/null 2>&1; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') 正在安装 $package..." | tee -a "$LOG_FILE"
-                if sudo apt-get install -y "$package"; then
+                if apk add "$package"; then
                     echo "$(date '+%Y-%m-%d %H:%M:%S') $package 安装成功" | tee -a "$LOG_FILE"
                 else
-                    echo "$(date '+%Y-%m-%d %H:%M:%S') $package 安装失败，请手动检查并安装。" | tee -a "$LOG_FILE"
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') $package 未安装，请手动检查并安装。" | tee -a "$LOG_FILE"
                     return 1
                 fi
             fi
@@ -97,7 +53,6 @@ check_and_install_packages() {
     else
         echo "$(date '+%Y-%m-%d %H:%M:%S') 所有必要的软件包已安装" | tee -a "$LOG_FILE"
     fi
-
     # 验证 tc 命令是否可用
     if ! command -v tc &>/dev/null; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') 警告：'tc' 命令不可用，可能影响限速功能。" | tee -a "$LOG_FILE"
@@ -110,6 +65,23 @@ check_and_install_packages() {
     # 获取主要网络接口
     local main_interface=$(ip route | grep default | sed -e 's/^.*dev \([^ ]*\).*$/\1/' | head -n 1)
     echo "$(date '+%Y-%m-%d %H:%M:%S') 主要网络接口: $main_interface" | tee -a "$LOG_FILE"
+
+    # 配置vnstatd
+    rc-update add vnstatd
+    vnstatd -d
+    echo "$(date '+%Y-%m-%d %H:%M:%S') vnstatd 服务启动成功" | tee -a "$LOG_FILE"
+
+    # 配置 vnstat
+    if [[ ! -f "/etc/vnstat.conf" ]]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') vnstat 配置文件不存在" | tee -a "$LOG_FILE"
+        exit 1
+    fi
+    sed -i \
+        -e 's/;UpdateInterval 20/UpdateInterval 20/' \
+        -e 's/;PollInterval 5/PollInterval 2/' \
+        -e 's/;SaveInterval 5/SaveInterval 1/' \
+        "/etc/vnstat.conf"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') 已更新 vnstat 配置文件" | tee -a "$LOG_FILE"
 
     # 获取 vnstat 统计开始时间
     if [ -n "$main_interface" ]; then
@@ -390,22 +362,26 @@ get_traffic_usage() {
     # echo "vnstat输出: $vnstat_output" >&2
 
     local usage
-    case $TRAFFIC_MODE in
-    out)
-        usage=$(echo "$vnstat_output" | cut -d';' -f10)
-        ;;
-    in)
-        usage=$(echo "$vnstat_output" | cut -d';' -f9)
-        ;;
-    total)
-        usage=$(echo "$vnstat_output" | cut -d';' -f11)
-        ;;
-    max)
-        local rx=$(echo "$vnstat_output" | cut -d';' -f9)
-        local tx=$(echo "$vnstat_output" | cut -d';' -f10)
-        usage=$(echo "$rx $tx" | tr ' ' '\n' | sort -rn | head -n1)
-        ;;
-    esac
+    if echo "$vnstat_output" | grep -q "No data"; then
+        usage=0
+    else
+        case $TRAFFIC_MODE in
+        out)
+            usage=$(echo "$vnstat_output" | cut -d';' -f10)
+            ;;
+        in)
+            usage=$(echo "$vnstat_output" | cut -d';' -f9)
+            ;;
+        total)
+            usage=$(echo "$vnstat_output" | cut -d';' -f11)
+            ;;
+        max)
+            local rx=$(echo "$vnstat_output" | cut -d';' -f9)
+            local tx=$(echo "$vnstat_output" | cut -d';' -f10)
+            usage=$(echo "$rx $tx" | tr ' ' '\n' | sort -rn | head -n1)
+            ;;
+        esac
+    fi
 
     # echo "用量字节数: $usage" >&2
     if [ -n "$usage" ]; then
@@ -466,14 +442,22 @@ setup_crontab() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') Crontab 已设置，每分钟运行一次" | tee -a "$LOG_FILE"
 }
 
+set_timezone() {
+    # 检查时区数据和链接是否存在
+    if [ -f /usr/share/zoneinfo/Asia/Shanghai ]; then
+        # 设置时区为 Asia/Shanghai
+        ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+        echo "$(date '+%Y-%m-%d %H:%M:%S') 时区已成功设置为 Asia/Shanghai" | tee -a "$LOG_FILE"
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') 找不到时区文件" | tee -a "$LOG_FILE"
+        return 2
+    fi
+}
+
 # 主函数
 main() {
-
     # 调用函数来杀死其他实例
     kill_other_instances
-
-    # 在脚本开始时调用迁移函数
-    migrate_files
 
     # 切换到工作目录
     cd "$WORK_DIR" || exit 1
@@ -503,6 +487,7 @@ main() {
     # 非 --run 模式下的操作
     # 首先检查并安装必要的软件包
     check_and_install_packages
+    set_timezone
     if check_existing_setup; then
         read_config
         show_current_config
