@@ -67,8 +67,8 @@ check_and_install_packages() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') 主要网络接口: $main_interface" | tee -a "$LOG_FILE"
 
     # 配置vnstatd
-    rc-update add vnstatd
-    vnstatd -d
+    rc-update add vnstatd boot
+    rc-service vnstatd start
     echo "$(date '+%Y-%m-%d %H:%M:%S') vnstatd 服务启动成功" | tee -a "$LOG_FILE"
 
     # 配置 vnstat
